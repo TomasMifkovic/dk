@@ -227,7 +227,7 @@ window.FarmGod.Translation = (function() {
             missingFeatures: 'Skript vyžaduje PU a FA!',
             options: {
                 title: 'FarmGod Nastavenia',
-                warning: '<b>Upozornenie:</b><br>- Do rabovania idú len ZELENÉ ciele (žltá/červená/modrá sa ignoruje)<br>- Pred použitím skriptu vypnite filtre vo Farm Assistante (skryté dediny by sa mohli pridať späť ako zelené)',
+                warning: `<b>Upozornenie:</b><br>- Do rabovania idú len ZELENÉ ciele (žltá/červená/modrá sa ignoruje)<br>- Pred použitím skriptu vypnite filtre vo Farm Assistante (skryté dediny by sa mohli pridať späť ako zelené)`,
                 filterImage: 'https://scripts.cybermine.cz/farmgod.png',
                 group: 'Poslať farmy zo skupiny:',
                 distance: 'Max vzdialenosť:',
@@ -235,14 +235,14 @@ window.FarmGod.Translation = (function() {
                 limitPoints: 'Iba barbarky do:',
                 findNewBarbs: 'Nájsť nové barbarky',
                 useBlacklist: 'Použiť blacklist z poznámok',
-                ramEnabled: 'Plánovať útoky s baranidlami (červené ciele)',
+                ramEnabled: `Plánovať útoky s baranidlami (červené ciele)`,
                 ramDistance: 'Baranidlá – max vzdialenosť:',
                 autoEnabled: 'Automatický režim (opakuje a posiela sám):',
                 autoInterval: 'Interval medzi cyklami (min – max):',
                 button: 'Plánovať farmy'
             },
             table: {
-                noFarmsPlanned: 'Žiadne farmy nemôžu byť poslané s aktuálnym nastavením.',
+                noFarmsPlanned: `Žiadne farmy nemôžu byť poslané s aktuálnym nastavením.`,
                 origin: 'Pôvod',
                 target: 'Cieľ',
                 points: 'Body',
@@ -254,7 +254,7 @@ window.FarmGod.Translation = (function() {
             },
             messages: {
                 villageChanged: 'Úspešne zmenená dedina!',
-                villageError: 'Všetky farmy pre súčasnú dedinu boli odoslané!',
+                villageError: `Všetky farmy pre súčasnú dedinu boli odoslané!`,
                 sendError: 'Error: Farma neposlaná!'
             }
         }
@@ -323,7 +323,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             console.log(`[FarmGod] Načítaných ${blacklist.size} súradníc do blacklistu`);
             return blacklist;
         } catch (e) {
-            console.warn("[FarmGod] Nepodarilo sa načítať poznámky → blacklist nebude použitý", e);
+            console.warn(`[FarmGod] Nepodarilo sa načítať poznámky → blacklist nebude použitý`, e);
             return blacklist;
         }
     };
@@ -352,7 +352,7 @@ window.FarmGod.Main = (function(Library, Translation) {
 
     const readOptions = () => Object.assign({}, DEFAULT_OPTIONS, JSON.parse(localStorage.getItem('farmGod_options')) || {});
 
-    const botProtectionPresent = () => $('#bot_check, .bot-protection-row, #botprotection_quest').length > 0;
+    const botProtectionPresent = () => $(`#bot_check, .bot-protection-row, #botprotection_quest`).length > 0;
 
     const setStatus = (txt) => { $('#farmGodAutoStatus').text(txt); };
 
@@ -412,7 +412,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             if (sendErrors >= MAX_SEND_ERRORS) break;
         }
         if (sendErrors >= MAX_SEND_ERRORS) {
-            if (autoActive) stopAuto('Príliš veľa chýb pri odosielaní (vypršané prihlásenie alebo bot ochrana?). Auto režim vypnutý.');
+            if (autoActive) stopAuto(`Príliš veľa chýb pri odosielaní (vypršané prihlásenie alebo bot ochrana?). Auto režim vypnutý.`);
             sendErrors = 0;
         }
     };
@@ -435,7 +435,7 @@ window.FarmGod.Main = (function(Library, Translation) {
 
     const autoCycle = async function(o) {
         if (!autoActive) return;
-        if (botProtectionPresent()) return stopAuto('Bot ochrana – potvrď captchu. Auto režim vypnutý.');
+        if (botProtectionPresent()) return stopAuto(`Bot ochrana – potvrď captchu. Auto režim vypnutý.`);
         setStatus('Načítavam dáta a plánujem…');
         try {
             await runPlanning(o);
@@ -443,14 +443,14 @@ window.FarmGod.Main = (function(Library, Translation) {
         } catch (e) {
             console.error('[FarmGod] chyba cyklu', e);
             cycleErrors++;
-            if (cycleErrors >= 2) return stopAuto('Opakovaná chyba pri načítaní dát. Auto režim vypnutý.');
+            if (cycleErrors >= 2) return stopAuto(`Opakovaná chyba pri načítaní dát. Auto režim vypnutý.`);
             return scheduleNext(o);
         }
         if (!autoActive) return;
         setStatus('Posielam útoky…');
         await sendAll();
         if (!autoActive) return;
-        if (botProtectionPresent()) return stopAuto('Bot ochrana – potvrď captchu. Auto režim vypnutý.');
+        if (botProtectionPresent()) return stopAuto(`Bot ochrana – potvrď captchu. Auto režim vypnutý.`);
         scheduleNext(o);
     };
 
@@ -631,7 +631,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             });
             return data;
         }).catch(err => {
-            console.warn("Nepodarilo sa načítať /map/village.txt → body barbariek budú chýbať", err);
+            console.warn(`Nepodarilo sa načítať /map/village.txt → body barbariek budú chýbať`, err);
             return data;
         });
     };
@@ -741,7 +741,7 @@ window.FarmGod.Main = (function(Library, Translation) {
 
         const villagesProcessor = ($html) => {
             if ($('#mobileHeader').length) {
-                $html.find('.overview-container .overview-container-item').filter((i, el) => !$(el).find('.bonus_icon_33').length).each(function() {
+                $html.find(`.overview-container .overview-container-item`).filter((i, el) => !$(el).find('.bonus_icon_33').length).each(function() {
                     let $el = $(this);
                     let $qel = $el.find('.quickedit-label').first();
                     let units = [];
@@ -760,7 +760,7 @@ window.FarmGod.Main = (function(Library, Translation) {
                     };
                 });
             } else {
-                $html.find('#combined_table .row_a, #combined_table .row_b').filter((i, el) => !$(el).find('.bonus_icon_33').length).each(function() {
+                $html.find(`#combined_table .row_a, #combined_table .row_b`).filter((i, el) => !$(el).find('.bonus_icon_33').length).each(function() {
                     let $el = $(this);
                     let $qel = $el.find('.quickedit-label').first();
                     let units = $el.find('.unit-item').filter((idx) => !skipUnits.includes(game_data.units[idx])).map((idx, el) => $(el).text().toNumber()).get();
@@ -777,7 +777,7 @@ window.FarmGod.Main = (function(Library, Translation) {
         };
 
         const commandsProcessor = ($html) => {
-            $html.find('#commands_table .row_a, #commands_table .row_ax, #commands_table .row_b, #commands_table .row_bx').each(function() {
+            $html.find(`#commands_table .row_a, #commands_table .row_ax, #commands_table .row_b, #commands_table .row_bx`).each(function() {
                 let $el = $(this);
                 let coord = $el.find('.quickedit-label').first().text().toCoord();
                 if (coord) {
@@ -795,7 +795,7 @@ window.FarmGod.Main = (function(Library, Translation) {
         const farmProcessor = ($html) => {
             if ($.isEmptyObject(data.farms.templates)) {
                 let unitSpeeds = lib.getUnitSpeeds();
-                $html.find('form[action*="action=edit_all"] tr:has(input[name*="template"][type="hidden"])').each(function() {
+                $html.find(`form[action*="action=edit_all"] tr:has(input[name*="template"][type="hidden"])`).each(function() {
                     let $el = $(this);
                     let name = $el.prev('tr').find('a.farm_icon').first().attr('class')?.match(/farm_icon_(\w+)/)?.[1];
                     if (!name) return;
@@ -818,7 +818,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             $html.find('#plunder_list tr').first().find('th').each((i, th) => {
                 if ($(th).find('img[src*="buildings/wall"]').length) wallIdx = i;
             });
-            if (wallIdx < 0) console.warn('[FarmGod] Stĺpec s múrom sa nenašiel – červené ciele budú mať múr "?"');
+            if (wallIdx < 0) console.warn(`[FarmGod] Stĺpec s múrom sa nenašiel – červené ciele budú mať múr "?"`);
 
             // načíta VŠETKY barbarky z plunder_list aj s farbou a múrom (filtrovanie farieb je až v filterFarms)
             $html.find('#plunder_list tr[id^="village_"]').each(function() {
@@ -927,7 +927,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             if (!candidates.length) return;   // mimo dosahu – nezobrazuj
 
             if (registry[target.coord]) {
-                result.skipped.push({ target, reason: 'Útok s baranidlami (poslaný týmto skriptom) už letí.' });
+                result.skipped.push({ target, reason: `Útok s baranidlami (poslaný týmto skriptom) už letí.` });
                 return;
             }
             let state = data.ramCommandState[target.coord];
@@ -936,7 +936,7 @@ window.FarmGod.Main = (function(Library, Translation) {
                 return;
             }
             if (state === 'unknown') {
-                result.skipped.push({ target, reason: 'Neviem overiť, či tam letia baranidlá – skontroluj ručne.' });
+                result.skipped.push({ target, reason: `Neviem overiť, či tam letia baranidlá – skontroluj ručne.` });
                 return;
             }
             // múr neznámy ("?") -> radšej nejdeme (nevieme, čo tam je); plánujeme len pri známom múre s definovaným vzorom
