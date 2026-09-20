@@ -333,7 +333,7 @@ window.FarmGod.Main = (function(Library, Translation) {
     //                      funguje aj zo záložky/konzoly).
     // RELOAD_PAGE = true : po každom cykle location.reload(). Script sa po reloade znova spustí LEN ak je nainštalovaný
     //                      ako Tampermonkey userscript (hlavička hore). Zo záložky by sa reloadom stratil.
-    const RELOAD_PAGE = false;
+    const RELOAD_PAGE = true;
     const AUTO_KEY = 'FarmGod_auto';
     const getAutoState = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
     const setAutoState = (patch) => localStorage.setItem(AUTO_KEY, JSON.stringify(Object.assign(getAutoState(), patch)));
