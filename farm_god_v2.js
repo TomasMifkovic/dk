@@ -6,6 +6,8 @@
 // ==/UserScript==
 // (Userscript hlavička sa používa len pri RELOAD_PAGE = true cez Tampermonkey; pri spustení cez záložku/konzolu sa ignoruje.)
 // javascript:$.getScript('https://scripts.cybermine.cz/FarmGod.js');
+// FarmMisko v1.6.2
+// v1.6.2: modrá dedina so známym múrom 0 sa rabuje ako zelená (modrá s múrom 1+ alebo '?' sa stále ignoruje).
 // FarmMisko v1.6
 // v1.6: červený / červeno-modrý cieľ s neznámym múrom ('?') sa PRESKAKUJE; útok s baranidlami sa plánuje len pri múre 1 alebo 2.
 // FarmMisko v1.5
@@ -866,7 +868,9 @@ window.FarmGod.Main = (function(Library, Translation) {
             data.redTargets = entries
                 .filter(([_, v]) => RAM_TARGET_COLORS.includes(v.color))
                 .map(([coord, v]) => Object.assign({ coord }, v));
-            data.farms.farms = Object.fromEntries(entries.filter(([_, v]) => v.color === 'green'));
+            // rabuje sa: zelená, ALEBO modrá (len prieskum) so ZNÁMYM múrom 0 (bez múru netreba baranidlá)
+            data.farms.farms = Object.fromEntries(entries.filter(([_, v]) =>
+                v.color === 'green' || (v.color === 'blue' && v.wall === 0)));
             return data;
         };
 
