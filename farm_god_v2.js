@@ -1,11 +1,7 @@
-// ==UserScript==
-// @name         FarmMisko
-// @match        https://*.divoke-kmene.sk/game.php*screen=am_farm*
-// @grant        none
-// @run-at       document-end
-// ==/UserScript==
-// (Userscript hlavička sa používa len pri RELOAD_PAGE = true cez Tampermonkey; pri spustení cez záložku/konzolu sa ignoruje.)
 // javascript:$.getScript('https://scripts.cybermine.cz/FarmGod.js');
+// FarmMisko v1.7
+// v1.7: nový cyklus začína reloadom stránky (verzia .user.js pre Tampermonkey, RELOAD_PAGE = true); stránkovanie FA sa číta z čerstvo
+//       stiahnutej stránky (predtým zo starej, otvorenej v okne); chyby sa počítajú aj cez reload.
 // FarmMisko v1.6.2
 // v1.6.2: modrá dedina so známym múrom 0 sa rabuje ako zelená (modrá s múrom 1+ alebo '?' sa stále ignoruje).
 // FarmMisko v1.6
@@ -137,7 +133,9 @@ window.FarmGod.Library = (function() {
     const determineNextPage = function(page, $html) {
         let villageLength = ($html.find('#scavenge_mass_screen').length > 0) ? $html.find('tr[id*="scavenge_village"]').length : $html.find('tr.row_a, tr.row_ax, tr.row_b, tr.row_bx').length;
         let navSelect = $html.find('.paged-nav-item').first().closest('td').find('select').first();
-        let navLength = ($html.find('#am_widget_Farm').length > 0) ? parseInt($('#plunder_list_nav').first().find('a.paged-nav-item, strong.paged-nav-item')[$('#plunder_list_nav').first().find('a.paged-nav-item, strong.paged-nav-item').length - 1].textContent.replace(/\D/g, '')) - 1 : ((navSelect.length > 0) ? navSelect.find('option').length - 1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length);
+        let $navRoot = ($html.find('#plunder_list_nav').length > 0) ? $html.find('#plunder_list_nav').first() : $('#plunder_list_nav').first();
+        let navItems = $navRoot.find('a.paged-nav-item, strong.paged-nav-item');
+        let navLength = ($html.find('#am_widget_Farm').length > 0) ? (navItems.length ? parseInt(navItems[navItems.length - 1].textContent.replace(/\D/g, '')) - 1 : 0) : ((navSelect.length > 0) ? navSelect.find('option').length - 1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length);
         let pageSize = ($('#mobileHeader').length > 0) ? 10 : parseInt($html.find('input[name="page_size"]').val());
         if (page == -1 && villageLength == 1000) {
             return Math.floor(1000 / pageSize);
@@ -337,6 +335,8 @@ window.FarmGod.Main = (function(Library, Translation) {
     //                      ako Tampermonkey userscript (hlavička hore). Zo záložky by sa reloadom stratil.
     const RELOAD_PAGE = false;
     const AUTO_KEY = 'FarmGod_auto';
+    const getAutoState = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
+    const setAutoState = (patch) => localStorage.setItem(AUTO_KEY, JSON.stringify(Object.assign(getAutoState(), patch)));
     const SEND_TIMEOUT_MS = 10 * 60 * 1000;   // poistka: jedno odosielanie max 10 min
     const MAX_SEND_ERRORS = 5;                // toľko chýb po sebe = zastav (session / bot ochrana)
     let autoTimer = null, countdownTimer = null;
@@ -371,7 +371,7 @@ window.FarmGod.Main = (function(Library, Translation) {
         abortSend = true;
         clearInterval(countdownTimer);
         clearTimeout(autoTimer);
-        localStorage.setItem(AUTO_KEY, JSON.stringify({ enabled: false }));
+        setAutoState({ enabled: false, errors: 0 });
         setStatus(msg || 'Zastavené.');
         if (msg && !quiet) UI.ErrorMessage(msg);
     };
@@ -426,7 +426,7 @@ window.FarmGod.Main = (function(Library, Translation) {
         clearTimeout(autoTimer);
         countdownTimer = setInterval(() => {
             let left = Math.max(0, Math.round((target - Date.now()) / 1000));
-            setStatus(`Ďalší cyklus o ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`);
+            setStatus(`${RELOAD_PAGE ? 'Reload stránky a nový cyklus' : 'Ďalší cyklus'} o ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`);
         }, 1000);
         autoTimer = setTimeout(() => {
             clearInterval(countdownTimer);
@@ -442,9 +442,11 @@ window.FarmGod.Main = (function(Library, Translation) {
         try {
             await runPlanning(o);
             cycleErrors = 0;
+            if (RELOAD_PAGE) setAutoState({ errors: 0 });
         } catch (e) {
             console.error('[FarmGod] chyba cyklu', e);
             cycleErrors++;
+            if (RELOAD_PAGE) setAutoState({ errors: cycleErrors });
             if (cycleErrors >= 2) return stopAuto(`Opakovaná chyba pri načítaní dát. Auto režim vypnutý.`);
             return scheduleNext(o);
         }
@@ -456,12 +458,12 @@ window.FarmGod.Main = (function(Library, Translation) {
         scheduleNext(o);
     };
 
-    const startAuto = function(o) {
+    const startAuto = function(o, resume) {
         autoActive = true;
         abortSend = false;
-        cycleErrors = 0;
+        cycleErrors = resume ? (getAutoState().errors || 0) : 0;
         sendErrors = 0;
-        if (RELOAD_PAGE) localStorage.setItem(AUTO_KEY, JSON.stringify({ enabled: true }));
+        if (RELOAD_PAGE) setAutoState({ enabled: true, errors: cycleErrors });
         renderAutoPanel();
         autoCycle(o);
     };
@@ -472,15 +474,15 @@ window.FarmGod.Main = (function(Library, Translation) {
             return;
         }
         if (game_data.screen !== 'am_farm') {
-            location.href = game_data.link_base_pure + 'am_farm';
+            if (!RELOAD_PAGE) location.href = game_data.link_base_pure + 'am_farm';   // userscript iné stránky nepresmerúva
             return;
         }
 
         // userscript režim: po reloade pokračuje auto bez dialógu
-        if (RELOAD_PAGE && (JSON.parse(localStorage.getItem(AUTO_KEY)) || {}).enabled) {
+        if (RELOAD_PAGE && getAutoState().enabled) {
             renderAutoPanel();
             setStatus('Štart o 3 s…');
-            setTimeout(() => startAuto(readOptions()), 3000);
+            setTimeout(() => startAuto(readOptions(), true), 3000);
             return;
         }
 
