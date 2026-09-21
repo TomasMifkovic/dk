@@ -1,4 +1,18 @@
+// ==UserScript==
+// @name         FarmMisko
+// @namespace    farmmisko
+// @version      1.8
+// @match        https://*.divoke-kmene.sk/game.php*screen=am_farm*
+// @grant        none
+// @run-at       document-end
+// @noframes
+// ==/UserScript==
+// (hlavička hore platí len pri inštalácii ako Tampermonkey userscript a RELOAD_PAGE = true; zo záložky / konzoly sa ignoruje)
 // javascript:$.getScript('https://scripts.cybermine.cz/FarmGod.js');
+// FarmMisko v1.8
+// v1.8: tabuľka baranidiel = všetky dediny so známym múrom > 0 (akákoľvek farba) s ručným tlačidlom (múr 1: 5 LK + 1 špeh + 4 baranidlá,
+//       múr 2: 10 LK + 1 špeh + 8 baranidiel); automatické posielanie baranidiel je voliteľné (default vypnuté);
+//       optimalizácie: cache village.txt (30 min) a info_command, o jeden request menej na prehľad dedín, jednotky dedín podľa mena stĺpca.
 // FarmMisko v1.7
 // v1.7: nový cyklus začína reloadom stránky (verzia .user.js pre Tampermonkey, RELOAD_PAGE = true); stránkovanie FA sa číta z čerstvo
 //       stiahnutej stránky (predtým zo starej, otvorenej v okne); chyby sa počítajú aj cez reload.
@@ -137,8 +151,9 @@ window.FarmGod.Library = (function() {
         let navItems = $navRoot.find('a.paged-nav-item, strong.paged-nav-item');
         let navLength = ($html.find('#am_widget_Farm').length > 0) ? (navItems.length ? parseInt(navItems[navItems.length - 1].textContent.replace(/\D/g, '')) - 1 : 0) : ((navSelect.length > 0) ? navSelect.find('option').length - 1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length);
         let pageSize = ($('#mobileHeader').length > 0) ? 10 : parseInt($html.find('input[name="page_size"]').val());
-        if (page == -1 && villageLength == 1000) {
-            return Math.floor(1000 / pageSize);
+        if (page == -1) {
+            // page=-1 = všetky riadky naraz (max 1000); ďalšie stránky by boli len duplicity (zbytočné requesty)
+            return (villageLength == 1000) ? Math.floor(1000 / pageSize) : false;
         } else if (page < navLength) {
             return page + 1;
         }
@@ -235,7 +250,8 @@ window.FarmGod.Translation = (function() {
                 limitPoints: 'Iba barbarky do:',
                 findNewBarbs: 'Nájsť nové barbarky',
                 useBlacklist: 'Použiť blacklist z poznámok',
-                ramEnabled: `Plánovať útoky s baranidlami (červené ciele)`,
+                ramEnabled: `Tabuľka útokov s baranidlami (múr > 0, ručné tlačidlá):`,
+                ramAuto: `Baranidlá posielať aj automaticky (BLITZKRIEG / auto; len červené a červeno-modré):`,
                 ramDistance: 'Baranidlá – max vzdialenosť:',
                 autoEnabled: 'Automatický režim (opakuje a posiela sám):',
                 autoInterval: 'Interval medzi cyklami (min – max):',
@@ -340,13 +356,13 @@ window.FarmGod.Main = (function(Library, Translation) {
     const SEND_TIMEOUT_MS = 10 * 60 * 1000;   // poistka: jedno odosielanie max 10 min
     const MAX_SEND_ERRORS = 5;                // toľko chýb po sebe = zastav (session / bot ochrana)
     let autoTimer = null, countdownTimer = null;
-    let autoActive = false, abortSend = false, sendErrors = 0, cycleErrors = 0;
+    let autoActive = false, abortSend = false, sendErrors = 0, cycleErrors = 0, currentRamAuto = false;
 
     const DEFAULT_OPTIONS = {
         optionGroup: 0, optionDistance: 25, optionTime: 10,
         limitPoints: true, maxPoints: 87,
         findNewBarbs: true, useBlacklist: true,
-        ramEnabled: true, ramDistance: 15,
+        ramEnabled: true, ramAuto: false, ramDistance: 15,
         autoEnabled: false, autoMin: 10, autoMax: 15
     };
 
@@ -381,9 +397,11 @@ window.FarmGod.Main = (function(Library, Translation) {
         return getData(o.optionGroup, o.findNewBarbs, o.useBlacklist, o.ramEnabled).then((data) => {
             try { Dialog.close(); } catch (e) {}
             // baranidlá sa plánujú PRVÉ, aby si rezervovali jednotky (LK + špeh) pred rabovaním
+            currentRamAuto = !!(o.ramEnabled && o.ramAuto);
             let ramPlan = o.ramEnabled
-                ? createRamPlanning(o.ramDistance, o.limitPoints, o.maxPoints, data)
+                ? createRamPlanning(o.ramDistance, o.limitPoints, o.maxPoints, currentRamAuto, data)
                 : { planned: [], skipped: [] };
+            ramPlan.unitsMissing = o.ramEnabled && data.ramUnitsMissing;
             let plan = createPlanning(o.optionDistance, o.optionTime, o.limitPoints, o.maxPoints, data);
             $('.farmGodContent').remove();
             $('#am_widget_Farm').first().before(buildRamTable(ramPlan, o.ramEnabled) + buildTable(plan.farms, data));
@@ -399,9 +417,12 @@ window.FarmGod.Main = (function(Library, Translation) {
     const sendAll = async function() {
         abortSend = false;
         let started = Date.now();
-        let rams = document.getElementsByClassName('farmGod_ramSend');
-        while (rams.length > 0 && !abortSend) {
-            await sendRam($(rams[0]));
+        // baranidlá sa v BLITZKRIEG / auto režime posielajú LEN ak je zapnuté "posielať automaticky" (a len červené / červeno-modré);
+        // inak sú tlačidlá v tabuľke na manuálne kliknutie
+        while (currentRamAuto && !abortSend) {
+            let btn = document.querySelector('.farmGod_ramSend[data-auto="1"]');
+            if (!btn) break;
+            await sendRam($(btn));
             await sleep(400);
             if (Date.now() - started > SEND_TIMEOUT_MS) break;
             if (sendErrors >= MAX_SEND_ERRORS) break;
@@ -498,6 +519,7 @@ window.FarmGod.Main = (function(Library, Translation) {
                     findNewBarbs:   $('.optionFindNewBarbs').prop('checked'),
                     useBlacklist:   $('.optionUseBlacklist').prop('checked'),
                     ramEnabled:     $('.optionRams').prop('checked'),
+                    ramAuto:        $('.optionRamAuto').prop('checked'),
                     ramDistance:    parseFloat($('.optionRamDistance').val()) || 15,
                     autoEnabled:    $('.optionAuto').prop('checked'),
                     autoMin:        parseFloat($('.optionAutoMin').val()) || 10,
@@ -578,6 +600,10 @@ window.FarmGod.Main = (function(Library, Translation) {
         <td><input type="checkbox" class="optionRams" ${options.ramEnabled?'checked':''}></td>
     </tr>
     <tr>
+        <td>${t.options.ramAuto}</td>
+        <td><input type="checkbox" class="optionRamAuto" ${options.ramAuto?'checked':''}></td>
+    </tr>
+    <tr>
         <td>${t.options.ramDistance}</td>
         <td><input type="text" size="5" class="optionRamDistance" value="${options.ramDistance}"></td>
     </tr>
@@ -591,7 +617,7 @@ window.FarmGod.Main = (function(Library, Translation) {
     </tr>
 </table>
 </div><br>
-<p><b>Rabovanie A aj B:</b> iba zelené barbarky (+ limit bodov, blacklist)<br><b>Červené / červeno-modré:</b> útok s baranidlami podľa múru (1 alebo 2), potom po zelenom reporte rabovanie. Ak je múr „?“, dedina sa preskočí.</p><br>
+<p><b>Rabovanie A aj B:</b> iba zelené barbarky (+ limit bodov, blacklist)<br><b>Baranidlá:</b> tabuľka všetkých dedín so známym múrom &gt; 0 (akákoľvek farba, múr 1 alebo 2) s ručným tlačidlom; ak je múr „?“, dedina sa nezobrazí.</p><br>
 <input type="button" class="btn optionButton" value="${t.options.button}">
 </div>`;
         });
@@ -612,25 +638,55 @@ window.FarmGod.Main = (function(Library, Translation) {
         });
     };
 
-    // village.txt sa stiahne len raz na jedno plánovanie
-    const getVillageTxt = function(data) {
-        if (!data.villageTxt) data.villageTxt = twLib.get('/map/village.txt');
-        return data.villageTxt;
-    };
+    // ====== CACHE (menej requestov na server) ======
+    // village.txt sa aktualizuje zhruba raz za hodinu -> barbarky (id, x, y, body) držíme 30 min (pamäť + sessionStorage)
+    const BARB_CACHE_KEY = 'FarmGod_barbs';
+    const BARB_TTL_MS = 30 * 60 * 1000;
+    let barbCache = null;
 
-    const loadVillagePoints = function(data) {
-        return getVillageTxt(data).then((txt) => {
-            let pts = {};
+    const getBarbs = function(data) {
+        if (data.barbsPromise) return data.barbsPromise;
+        if (!barbCache) {
+            try { barbCache = JSON.parse(sessionStorage.getItem(BARB_CACHE_KEY)); } catch (e) { barbCache = null; }
+        }
+        if (barbCache && Date.now() - barbCache.ts < BARB_TTL_MS) {
+            data.barbsPromise = Promise.resolve(barbCache.list);
+            return data.barbsPromise;
+        }
+        data.barbsPromise = twLib.get('/map/village.txt').then((txt) => {
+            let list = [];
             txt.match(/[^\r\n]+/g)?.forEach(line => {
                 let parts = line.split(',');
                 if (parts.length < 6) return;
                 let [id, name, x, y, player_id, points] = parts;
-                if (player_id === '0') pts[`${x}|${y}`] = parseInt(points, 10) || 0;
+                if (player_id === '0') list.push([parseInt(id, 10), parseInt(x, 10), parseInt(y, 10), parseInt(points, 10) || 0]);
             });
+            barbCache = { ts: Date.now(), list: list };
+            try { sessionStorage.setItem(BARB_CACHE_KEY, JSON.stringify(barbCache)); } catch (e) {}
+            return list;
+        });
+        return data.barbsPromise;
+    };
+
+    // obsah príkazu (letia tam baranidlá?) sa už nemení -> výsledok držíme v sessionStorage
+    const CMD_CACHE_KEY = 'FarmGod_cmdRam';
+    const loadCmdCache = () => { try { return JSON.parse(sessionStorage.getItem(CMD_CACHE_KEY)) || {}; } catch (e) { return {}; } };
+    const saveCmdCache = (c) => {
+        try {
+            let keys = Object.keys(c);
+            if (keys.length > 600) keys.slice(0, keys.length - 600).forEach(k => delete c[k]);
+            sessionStorage.setItem(CMD_CACHE_KEY, JSON.stringify(c));
+        } catch (e) {}
+    };
+
+    const loadVillagePoints = function(data) {
+        return getBarbs(data).then((list) => {
+            let pts = {};
+            list.forEach(([id, x, y, p]) => { pts[`${x}|${y}`] = p; });
             Object.keys(data.farms.farms).forEach(c => {
                 if (pts[c] !== undefined) data.farms.farms[c].points = pts[c];
             });
-            data.redTargets.forEach(tg => {
+            data.ramCandidates.forEach(tg => {
                 if (pts[tg.coord] !== undefined) tg.points = pts[tg.coord];
             });
             return data;
@@ -675,10 +731,13 @@ window.FarmGod.Main = (function(Library, Translation) {
         return html;
     };
 
-    // ====== TABUĽKA: červené ciele + útok s baranidlami ======
+    // ====== TABUĽKA: dediny so známym múrom > 0 (akákoľvek farba) + ručné tlačidlo na útok s baranidlami ======
+    const COLOR_STYLE = { red: '#a00', red_blue: '#a0a', yellow: '#b80', blue: '#05a', green: '#080' };
+    const colorTag = (c) => `<span style="color:${COLOR_STYLE[c] || '#555'};">[${c}]</span>`;
+
     const buildRamTable = function(ramPlan, enabled) {
         if (!enabled) return '';
-        let html = `<div class="vis farmGodContent"><h4>FarmGod – baranidlá na červené ciele</h4>
+        let html = `<div class="vis farmGodContent"><h4>FarmGod – útoky s baranidlami (dediny so známym múrom &gt; 0)</h4>
             <table class="vis" width="100%">
             <tr>
                 <th style="text-align:center;">Pôvod</th>
@@ -690,15 +749,16 @@ window.FarmGod.Main = (function(Library, Translation) {
                 <th style="text-align:center;">Jednotky</th>
                 <th style="text-align:center;">Akcia</th>
             </tr>`;
-        let unknownCount = ramPlan.skipped.filter(s => s.unknownWall).length;
-        let shownSkipped = ramPlan.skipped.filter(s => !s.unknownWall);
-        if (!ramPlan.planned.length && !shownSkipped.length && !unknownCount) {
-            html += `<tr><td colspan="8" style="text-align:center;">Žiadne červené ciele v dosahu.</td></tr>`;
+        if (ramPlan.unitsMissing) {
+            html += `<tr><td colspan="8" style="background:#f8d0d0;text-align:left;">Počet baranidiel / jednotiek sa nepodarilo prečítať z prehľadu dedín – tlačidlá nižšie nemusia byť správne. Skontroluj konzolu (F12) a napíš mi.</td></tr>`;
+        }
+        if (!ramPlan.planned.length && !ramPlan.skipped.length) {
+            html += `<tr><td colspan="8" style="text-align:center;">Žiadna dedina so známym múrom &gt; 0.</td></tr>`;
         }
         ramPlan.planned.forEach((r, i) => {
             html += `<tr class="row_${(i%2==0)?'a':'b'}">
                 <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${r.origin.id}">${r.origin.name} (${r.origin.coord})</a></td>
-                <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${r.target.id}">Dedina barbarov (${r.target.coord})</a> <span style="color:#a00;">[${r.target.color}]</span></td>
+                <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${r.target.id}">Dedina barbarov (${r.target.coord})</a> ${colorTag(r.target.color)}</td>
                 <td style="text-align:center;font-weight:bold;">${r.target.wall}</td>
                 <td style="text-align:center;">${r.target.points !== undefined ? r.target.points.toLocaleString('sk-SK') : '?'}</td>
                 <td style="text-align:center;">${r.fields.toFixed(2)}</td>
@@ -707,22 +767,19 @@ window.FarmGod.Main = (function(Library, Translation) {
                 <td style="text-align:center;"><input type="button" class="btn farmGod_ramSend" value="Poslať"
                     data-origin="${r.origin.id}" data-coord="${r.target.coord}"
                     data-light="${r.units.light}" data-spy="${r.units.spy}" data-ram="${r.units.ram}"
-                    data-eta="${r.eta}">
+                    data-eta="${r.eta}" data-auto="${r.auto ? 1 : 0}">
                     <a href="/game.php?village=${r.origin.id}&screen=place&target=${r.target.id}" target="_blank" title="Otvoriť nádvorie">&#8599;</a></td>
             </tr>`;
         });
-        shownSkipped.forEach((s) => {
+        ramPlan.skipped.forEach((s) => {
             html += `<tr style="opacity:0.7;">
                 <td style="text-align:center;">—</td>
-                <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${s.target.id}">Dedina barbarov (${s.target.coord})</a> <span style="color:#a00;">[${s.target.color}]</span></td>
-                <td style="text-align:center;">${isNaN(s.target.wall) ? '?' : s.target.wall}</td>
+                <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${s.target.id}">Dedina barbarov (${s.target.coord})</a> ${colorTag(s.target.color)}</td>
+                <td style="text-align:center;">${s.target.wall}</td>
                 <td style="text-align:center;">${s.target.points !== undefined ? s.target.points.toLocaleString('sk-SK') : '?'}</td>
                 <td colspan="4" style="text-align:left;">${s.reason}</td>
             </tr>`;
         });
-        if (unknownCount) {
-            html += `<tr><td colspan="8" style="text-align:left;opacity:0.8;">Preskočených ${unknownCount} červených / červeno-modrých cieľov v dosahu s neznámym múrom (?).</td></tr>`;
-        }
         html += `</table></div>`;
         return html;
     };
@@ -731,7 +788,7 @@ window.FarmGod.Main = (function(Library, Translation) {
         let data = {
             villages: {}, commands: {}, commandIds: {}, ramCommandState: {},
             farms: { templates: {}, farms: {} },
-            redTargets: [], blacklist: new Set(), unitNames: [], villageTxt: null
+            ramCandidates: [], ramUnitsMissing: false, blacklist: new Set(), unitNames: [], barbsPromise: null
         };
 
         if (useBlacklist) {
@@ -767,9 +824,12 @@ window.FarmGod.Main = (function(Library, Translation) {
                 $html.find(`#combined_table .row_a, #combined_table .row_b`).filter((i, el) => !$(el).find('.bonus_icon_33').length).each(function() {
                     let $el = $(this);
                     let $qel = $el.find('.quickedit-label').first();
-                    let units = $el.find('.unit-item').filter((idx) => !skipUnits.includes(game_data.units[idx])).map((idx, el) => $(el).text().toNumber()).get();
                     let all = {};
-                    $el.find('.unit-item').each((idx, cell) => { all[game_data.units[idx]] = $(cell).text().toNumber(); });
+                    $el.find('.unit-item').each((idx, cell) => {
+                        let m = ($(cell).attr('class') || '').match(/unit-item-(\w+)/);   // názov jednotky z triedy, inak z poradia
+                        all[m ? m[1] : game_data.units[idx]] = $(cell).text().toNumber();
+                    });
+                    let units = data.unitNames.map(u => all[u] || 0);
                     data.villages[$qel.text().toCoord()] = {
                         name: $qel.data('text'),
                         id: parseInt($el.find('.quickedit-vn').first().data('id')),
@@ -849,14 +909,12 @@ window.FarmGod.Main = (function(Library, Translation) {
 
         // Nové barbarky: pridávajú sa až PO načítaní am_farm a len tie, ktoré FA vôbec nepozná
         const addNewBarbsRespectingColors = () => {
-            return getVillageTxt(data).then(txt => {
+            return getBarbs(data).then(list => {
                 let added = 0;
-                txt.match(/[^\r\n]+/g)?.forEach(line => {
-                    let [id, , x, y, player_id] = line.split(',');
-                    if (player_id !== '0') return;
+                list.forEach(([id, x, y]) => {
                     let coord = `${x}|${y}`;
                     if (data.farms.farms[coord]) return;   // FA ju pozná → nikdy ju neprepisuj
-                    data.farms.farms[coord] = { id: parseInt(id, 10), color: 'green', wall: NaN };
+                    data.farms.farms[coord] = { id: id, color: 'green', wall: NaN };
                     added++;
                 });
                 console.log(`[FarmGod] Pridaných ${added} nových barbariek`);
@@ -864,32 +922,39 @@ window.FarmGod.Main = (function(Library, Translation) {
             });
         };
 
-        // WHITELIST: do rabovania ide LEN zelená. Červené a červeno-modré idú do zoznamu pre baranidlá.
+        // Rabuje sa: zelená, ALEBO modrá (len prieskum) so ZNÁMYM múrom 0.
+        // Tabuľka s baranidlami: ktorákoľvek farba, ale múr musí byť ZNÁMY a > 0 ("?" sa nezobrazí).
         const filterFarms = () => {
             let entries = Object.entries(data.farms.farms);
-            data.redTargets = entries
-                .filter(([_, v]) => RAM_TARGET_COLORS.includes(v.color))
+            data.ramCandidates = entries
+                .filter(([_, v]) => Number.isFinite(v.wall) && v.wall > 0)
                 .map(([coord, v]) => Object.assign({ coord }, v));
-            // rabuje sa: zelená, ALEBO modrá (len prieskum) so ZNÁMYM múrom 0 (bez múru netreba baranidlá)
             data.farms.farms = Object.fromEntries(entries.filter(([_, v]) =>
                 v.color === 'green' || (v.color === 'blue' && v.wall === 0)));
             return data;
         };
 
-        // Zistí, či k červenému cieľu už letí náš útok s baranidlami (cez info_command).
+        // Zistí, či k cieľu už letí náš útok s baranidlami (cez info_command; výsledok pre dané id príkazu sa cachuje).
         // 'ram' = letí, 'noram' = letia iba iné útoky, 'unknown' = nepodarilo sa overiť (cieľ sa radšej preskočí)
         const detectRamCommands = async () => {
             if (!planRams) return data;
-            for (const target of data.redTargets) {
+            let cache = loadCmdCache();
+            let fetched = 0;
+            for (const target of data.ramCandidates) {
                 let ids = data.commandIds[target.coord];
                 if (!ids || !ids.length) continue;
                 let state = 'noram';
                 for (const id of ids) {
+                    if (cache[id] === 'ram') { state = 'ram'; break; }
+                    if (cache[id] === 'noram') continue;
                     try {
                         let html = await twLib.get(TribalWars.buildURL('GET', 'info_command', { id: id }));
                         let $h = $(html);
                         if (!$h.find('.unit-item').length) { state = 'unknown'; break; }
-                        if ($h.find('.unit-item-ram').first().text().toNumber() > 0) { state = 'ram'; break; }
+                        let hasRam = $h.find('.unit-item-ram').first().text().toNumber() > 0;
+                        cache[id] = hasRam ? 'ram' : 'noram';
+                        fetched++;
+                        if (hasRam) { state = 'ram'; break; }
                     } catch (e) {
                         state = 'unknown';
                         break;
@@ -897,6 +962,8 @@ window.FarmGod.Main = (function(Library, Translation) {
                 }
                 data.ramCommandState[target.coord] = state;
             }
+            saveCmdCache(cache);
+            console.log(`[FarmGod] info_command: stiahnutých ${fetched}, zvyšok z cache`);
             return data;
         };
 
@@ -911,51 +978,61 @@ window.FarmGod.Main = (function(Library, Translation) {
             .then(filterFarms)
             .then(() => loadVillagePoints(data))
             .then(detectRamCommands)
-            .then(() => data);
+            .then(() => {
+                // kontrola: podarilo sa prečítať počty jednotiek (hlavne baranidlá) z prehľadu dedín?
+                data.ramUnitsMissing = !Object.values(data.villages).some(v => Number.isFinite(v.all.ram));
+                if (data.ramUnitsMissing) console.warn('[FarmGod] Počet baranidiel sa nepodarilo prečítať z prehľadu dedín', data.villages);
+                return data;
+            });
     };
 
     // ====== PLÁNOVANIE ÚTOKOV S BARANIDLAMI ======
-    const createRamPlanning = function(maxDistance, limitPoints, maxPoints, data) {
+    // Zoznam = všetky dediny so známym múrom > 0 (akákoľvek farba). Ku každej sa nájde najbližšia dedina s dosť jednotkami.
+    // reserveAuto: jednotky pre riadky, ktoré sa budú posielať automaticky (červené / červeno-modré), sa odpočítajú aj rabovaniu.
+    // Ručné riadky rabovaniu jednotky NEberú (nevieme, či na ne klikneš).
+    const createRamPlanning = function(maxDistance, limitPoints, maxPoints, reserveAuto, data) {
         let result = { planned: [], skipped: [] };
         let ramSpeed = (lib.getUnitSpeeds() || {}).ram || 30;
         let registry = loadRamRegistry();
         let idxLight = data.unitNames.indexOf('light');
         let idxSpy   = data.unitNames.indexOf('spy');
+        let villageCoords = Object.keys(data.villages);
 
-        data.redTargets.forEach(target => {
+        let targets = data.ramCandidates
+            .map(tg => ({ target: tg, near: Math.min(...villageCoords.map(o => lib.getDistance(o, tg.coord))) }))
+            .sort((a, b) => a.near - b.near);
+
+        targets.forEach(({ target, near }) => {
             if (data.blacklist.size > 0 && data.blacklist.has(target.coord)) return;
             if (limitPoints && (target.points ?? 999999) >= maxPoints) return;
 
-            let candidates = Object.keys(data.villages)
-                .map(o => ({ origin: o, dis: lib.getDistance(o, target.coord) }))
-                .filter(c => c.dis < maxDistance)
-                .sort((a, b) => a.dis - b.dis);
-            if (!candidates.length) return;   // mimo dosahu – nezobrazuj
-
+            let plan = RAM_PLANS[target.wall];
+            if (!plan) {
+                result.skipped.push({ target, reason: `Múr ${target.wall} nemá definovaný vzor – manuálne.` });
+                return;
+            }
+            if (near >= maxDistance) {
+                result.skipped.push({ target, reason: `Mimo dosahu (najbližšia dedina ${near.toFixed(1)} polí).` });
+                return;
+            }
             if (registry[target.coord]) {
                 result.skipped.push({ target, reason: `Útok s baranidlami (poslaný týmto skriptom) už letí.` });
                 return;
             }
             let state = data.ramCommandState[target.coord];
             if (state === 'ram') {
-                result.skipped.push({ target, reason: 'Útok s baranidlami už letí.' });
+                result.skipped.push({ target, reason: `Útok s baranidlami už letí.` });
                 return;
             }
             if (state === 'unknown') {
                 result.skipped.push({ target, reason: `Neviem overiť, či tam letia baranidlá – skontroluj ručne.` });
                 return;
             }
-            // múr neznámy ("?") -> radšej nejdeme (nevieme, čo tam je); plánujeme len pri známom múre s definovaným vzorom
-            if (isNaN(target.wall)) {
-                result.skipped.push({ target, unknownWall: true, reason: 'Múr neznámy (?) – preskočené.' });
-                return;
-            }
-            let plan = RAM_PLANS[target.wall];
-            if (!plan) {
-                result.skipped.push({ target, reason: `Múr ${target.wall} nemá definovaný vzor – manuálne.` });
-                return;
-            }
 
+            let candidates = villageCoords
+                .map(o => ({ origin: o, dis: lib.getDistance(o, target.coord) }))
+                .filter(c => c.dis < maxDistance)
+                .sort((a, b) => a.dis - b.dis);
             let chosen = candidates.find(c => {
                 let a = data.villages[c.origin].all;
                 return (a.light || 0) >= plan.light && (a.spy || 0) >= plan.spy && (a.ram || 0) >= plan.ram;
@@ -969,12 +1046,16 @@ window.FarmGod.Main = (function(Library, Translation) {
             v.all.light -= plan.light;
             v.all.spy   -= plan.spy;
             v.all.ram   -= plan.ram;
-            if (idxLight >= 0) v.units[idxLight] -= plan.light;   // rezervácia pre rabovanie
-            if (idxSpy   >= 0) v.units[idxSpy]   -= plan.spy;
+            let auto = RAM_TARGET_COLORS.includes(target.color);
+            if (reserveAuto && auto) {
+                if (idxLight >= 0) v.units[idxLight] -= plan.light;   // rezervácia pre automatické posielanie
+                if (idxSpy   >= 0) v.units[idxSpy]   -= plan.spy;
+            }
 
             result.planned.push({
                 origin: { coord: chosen.origin, name: v.name, id: v.id },
                 target: target,
+                auto: auto,
                 fields: chosen.dis,
                 eta: Math.round(chosen.dis * ramSpeed * 60),
                 units: { light: plan.light, spy: plan.spy, ram: plan.ram }
