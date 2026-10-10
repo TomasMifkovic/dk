@@ -455,7 +455,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             quest.click();
             await sleep(500);
             const captcha = document.querySelector('#popup_box_bot_protection #popup_box_content .anchor');
-            captcha.click();
+            if (captcha) captcha.click();
         }
         captchaWaiting = true;
         let prevStatus = $('#farmGodAutoStatus').text();
