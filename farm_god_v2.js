@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FarmMisko
 // @namespace    farmmisko
-// @version      1.8
+// @version      1.10
 // @match        https://*.divoke-kmene.sk/game.php*screen=am_farm*
 // @grant        none
 // @run-at       document-end
@@ -9,6 +9,13 @@
 // ==/UserScript==
 // (hlavička hore platí len pri inštalácii ako Tampermonkey userscript a RELOAD_PAGE = true; zo záložky / konzoly sa ignoruje)
 // javascript:$.getScript('https://scripts.cybermine.cz/FarmGod.js');
+// FarmMisko v1.10
+// v1.10: pri auto režime sa každých 10 odoslaných útokov a vždy na konci cyklu (pred naplánovaním ďalšieho kola)
+//        skontroluje, či nevyskočila captcha / bot ochrana. Skript ju NERIEŠI sám – iba sa pozastaví,
+//        upozorní (zvuk, blikajúci title, notifikácia) a po ručnom potvrdení pokračuje tam, kde skončil.
+// FarmMisko v1.9
+// v1.9: do tabuľky baranidiel idú aj červené / červeno-modré / červeno-žlté / žlté dediny s neznámym múrom ('?');
+//       posiela sa na ne 5 LK + 1 špeh + 4 baranidlá, len ručným tlačidlom (RAM_UNKNOWN_AUTO = false).
 // FarmMisko v1.8
 // v1.8: tabuľka baranidiel = všetky dediny so známym múrom > 0 (akákoľvek farba) s ručným tlačidlom (múr 1: 5 LK + 1 špeh + 4 baranidlá,
 //       múr 2: 10 LK + 1 špeh + 8 baranidiel); automatické posielanie baranidiel je voliteľné (default vypnuté);
@@ -295,6 +302,12 @@ window.FarmGod.Main = (function(Library, Translation) {
         2: { light: 10, spy: 1, ram: 8 }
     };
     const RAM_TARGET_COLORS = ['red', 'red_blue'];   // farby, ktoré idú do tabuľky s baranidlami
+    // v1.9: dediny s NEZNÁMYM múrom ('?') sa zaradia do tabuľky baranidiel, ak majú jednu z týchto farieb
+    const RAM_UNKNOWN_WALL_COLORS = ['red', 'red_blue', 'red_yellow', 'yellow'];
+    // vzor pri neznámom múre ('?')
+    const RAM_UNKNOWN_PLAN = { light: 5, spy: 1, ram: 4 };
+    // false = dediny s múrom '?' majú len ručné tlačidlo (BLITZKRIEG / auto ich nepošle)
+    const RAM_UNKNOWN_AUTO = false;
     const RAM_REGISTRY_KEY  = 'FarmGod_ramSent';      // localStorage: coord -> čas dopadu (s)
     const RAM_ARRIVAL_MARGIN = 120;                   // s po dopade, kým sa ešte berie ako "letí"
 
@@ -382,6 +395,75 @@ window.FarmGod.Main = (function(Library, Translation) {
         $('#farmGodAutoStop').on('click', () => stopAuto('Zastavené ručne.', true));
     };
 
+    // ====== KONTROLA CAPTCHY (pozastavenie, nie riešenie) ======
+    // Každý CAPTCHA_CHECK_EVERY-tý odoslaný útok a vždy na konci cyklu (pred naplánovaním ďalšieho kola)
+    // sa skontroluje, či sa zobrazila captcha / bot ochrana. Ak áno, skript sa SÁM NEPOKÚŠA ju vyriešiť –
+    // iba sa pozastaví, upozorní (zvuk + blikajúci title + browser notifikácia) a čaká, kým ju človek
+    // ručne potvrdí v hre. Keď captcha zmizne, pokračuje presne tam, kde skončil.
+    const CAPTCHA_CHECK_EVERY = 10;
+    const CAPTCHA_POLL_MS = 2000;
+    const originalDocTitle = document.title;
+    let captchaWaiting = false;
+    let titleBlinkTimer = null;
+
+    const beep = function() {
+        try {
+            let ctx = new (window.AudioContext || window.webkitAudioContext)();
+            let osc = ctx.createOscillator();
+            let gain = ctx.createGain();
+            osc.frequency.value = 880;
+            osc.connect(gain); gain.connect(ctx.destination);
+            gain.gain.setValueAtTime(0.2, ctx.currentTime);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.4);
+        } catch (e) {}
+    };
+
+    const notifyCaptcha = function() {
+        beep();
+        if (!titleBlinkTimer) {
+            let on = false;
+            titleBlinkTimer = setInterval(() => {
+                document.title = on ? originalDocTitle : '⚠ CAPTCHA – FarmGod';
+                on = !on;
+            }, 1000);
+        }
+        $('#farmGodAuto').css({ background: '#f5b5b5', 'border-color': '#a00' });
+        try {
+            if (window.Notification) {
+                if (Notification.permission === 'granted') {
+                    new Notification('FarmGod: captcha', { body: 'Treba ručne potvrdiť captchu v hre.' });
+                } else if (Notification.permission !== 'denied') {
+                    Notification.requestPermission();
+                }
+            }
+        } catch (e) {}
+    };
+
+    const clearCaptchaNotice = function() {
+        if (titleBlinkTimer) { clearInterval(titleBlinkTimer); titleBlinkTimer = null; }
+        document.title = originalDocTitle;
+        $('#farmGodAuto').css({ background: '#f4e4bc', 'border-color': '#7d510f' });
+    };
+
+    // Vráti true a pokračuje ďalej, keď captcha nie je prítomná ALEBO zmizla po ručnom potvrdení.
+    // Vráti false, len ak bolo medzitým stlačené STOP (abortSend / autoActive = false).
+    const pauseForCaptchaIfPresent = async function(label) {
+        if (!botProtectionPresent()) return true;
+        captchaWaiting = true;
+        let prevStatus = $('#farmGodAutoStatus').text();
+        setStatus(`Captcha (${label}) – potvrď ju ručne v hre, FarmGod čaká a potom sám pokračuje…`);
+        notifyCaptcha();
+        while (botProtectionPresent()) {
+            if (abortSend) { captchaWaiting = false; clearCaptchaNotice(); return false; }
+            await sleep(CAPTCHA_POLL_MS);
+        }
+        captchaWaiting = false;
+        clearCaptchaNotice();
+        setStatus('Captcha potvrdená, pokračujem…');
+        return true;
+    };
+
     const stopAuto = function(msg, quiet) {
         autoActive = false;
         abortSend = true;
@@ -417,12 +499,22 @@ window.FarmGod.Main = (function(Library, Translation) {
     const sendAll = async function() {
         abortSend = false;
         let started = Date.now();
+        let sentCount = 0;
+        // každý CAPTCHA_CHECK_EVERY-tý odoslaný útok: pozri, či nevyskočila captcha; ak áno, počkaj na ručné potvrdenie
+        const checkCaptchaTick = async function() {
+            sentCount++;
+            if (sentCount % CAPTCHA_CHECK_EVERY === 0) {
+                let ok = await pauseForCaptchaIfPresent(`po ${sentCount}. útoku`);
+                if (!ok) abortSend = true;
+            }
+        };
         // baranidlá sa v BLITZKRIEG / auto režime posielajú LEN ak je zapnuté "posielať automaticky" (a len červené / červeno-modré);
         // inak sú tlačidlá v tabuľke na manuálne kliknutie
         while (currentRamAuto && !abortSend) {
             let btn = document.querySelector('.farmGod_ramSend[data-auto="1"]');
             if (!btn) break;
             await sendRam($(btn));
+            await checkCaptchaTick();
             await sleep(400);
             if (Date.now() - started > SEND_TIMEOUT_MS) break;
             if (sendErrors >= MAX_SEND_ERRORS) break;
@@ -430,6 +522,7 @@ window.FarmGod.Main = (function(Library, Translation) {
         let buttons = document.getElementsByClassName('farmGod_icon');
         while (buttons.length > 0 && !abortSend) {
             buttons[0].click();
+            await checkCaptchaTick();
             await sleep(200);
             if (Date.now() - started > SEND_TIMEOUT_MS) break;
             if (sendErrors >= MAX_SEND_ERRORS) break;
@@ -458,7 +551,9 @@ window.FarmGod.Main = (function(Library, Translation) {
 
     const autoCycle = async function(o) {
         if (!autoActive) return;
-        if (botProtectionPresent()) return stopAuto(`Bot ochrana – potvrď captchu. Auto režim vypnutý.`);
+        // pred načítaním dát: ak visí captcha ešte z minula, počkaj, kým ju človek potvrdí (skript ju sám nerieši)
+        if (!(await pauseForCaptchaIfPresent('začiatok cyklu'))) return stopAuto(`Zastavené počas čakania na captchu.`, true);
+        if (!autoActive) return;
         setStatus('Načítavam dáta a plánujem…');
         try {
             await runPlanning(o);
@@ -475,7 +570,11 @@ window.FarmGod.Main = (function(Library, Translation) {
         setStatus('Posielam útoky…');
         await sendAll();
         if (!autoActive) return;
-        if (botProtectionPresent()) return stopAuto(`Bot ochrana – potvrď captchu. Auto režim vypnutý.`);
+        // na konci cyklu, PRED naplánovaním ďalšieho kola o random čas: ešte raz skontroluj captchu
+        if (!(await pauseForCaptchaIfPresent('koniec cyklu, pred naplánovaním ďalšieho kola'))) {
+            return stopAuto(`Zastavené počas čakania na captchu.`, true);
+        }
+        if (!autoActive) return;
         scheduleNext(o);
     };
 
@@ -617,7 +716,7 @@ window.FarmGod.Main = (function(Library, Translation) {
     </tr>
 </table>
 </div><br>
-<p><b>Rabovanie A aj B:</b> iba zelené barbarky (+ limit bodov, blacklist)<br><b>Baranidlá:</b> tabuľka všetkých dedín so známym múrom &gt; 0 (akákoľvek farba, múr 1 alebo 2) s ručným tlačidlom; ak je múr „?“, dedina sa nezobrazí.</p><br>
+<p><b>Rabovanie A aj B:</b> iba zelené barbarky (+ limit bodov, blacklist)<br><b>Baranidlá:</b> tabuľka všetkých dedín so známym múrom &gt; 0 (akákoľvek farba, múr 1 alebo 2) s ručným tlačidlom; červené / červeno-modré / červeno-žlté / žlté s múrom „?“ sa zobrazia tiež (vzor 5 LK + 1 špeh + 4 baranidlá, len ručne).</p><br>
 <input type="button" class="btn optionButton" value="${t.options.button}">
 </div>`;
         });
@@ -732,12 +831,12 @@ window.FarmGod.Main = (function(Library, Translation) {
     };
 
     // ====== TABUĽKA: dediny so známym múrom > 0 (akákoľvek farba) + ručné tlačidlo na útok s baranidlami ======
-    const COLOR_STYLE = { red: '#a00', red_blue: '#a0a', yellow: '#b80', blue: '#05a', green: '#080' };
+    const COLOR_STYLE = { red: '#a00', red_blue: '#a0a', red_yellow: '#c50', yellow: '#b80', blue: '#05a', green: '#080' };
     const colorTag = (c) => `<span style="color:${COLOR_STYLE[c] || '#555'};">[${c}]</span>`;
 
     const buildRamTable = function(ramPlan, enabled) {
         if (!enabled) return '';
-        let html = `<div class="vis farmGodContent"><h4>FarmGod – útoky s baranidlami (dediny so známym múrom &gt; 0)</h4>
+        let html = `<div class="vis farmGodContent"><h4>FarmGod – útoky s baranidlami (múr &gt; 0, alebo múr „?“ pri červenej / žltej)</h4>
             <table class="vis" width="100%">
             <tr>
                 <th style="text-align:center;">Pôvod</th>
@@ -753,13 +852,13 @@ window.FarmGod.Main = (function(Library, Translation) {
             html += `<tr><td colspan="8" style="background:#f8d0d0;text-align:left;">Počet baranidiel / jednotiek sa nepodarilo prečítať z prehľadu dedín – tlačidlá nižšie nemusia byť správne. Skontroluj konzolu (F12) a napíš mi.</td></tr>`;
         }
         if (!ramPlan.planned.length && !ramPlan.skipped.length) {
-            html += `<tr><td colspan="8" style="text-align:center;">Žiadna dedina so známym múrom &gt; 0.</td></tr>`;
+            html += `<tr><td colspan="8" style="text-align:center;">Žiadna vhodná dedina (múr &gt; 0, alebo „?“ pri červenej / žltej).</td></tr>`;
         }
         ramPlan.planned.forEach((r, i) => {
             html += `<tr class="row_${(i%2==0)?'a':'b'}">
                 <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${r.origin.id}">${r.origin.name} (${r.origin.coord})</a></td>
                 <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${r.target.id}">Dedina barbarov (${r.target.coord})</a> ${colorTag(r.target.color)}</td>
-                <td style="text-align:center;font-weight:bold;">${r.target.wall}</td>
+                <td style="text-align:center;font-weight:bold;">${Number.isFinite(r.target.wall) ? r.target.wall : '?'}</td>
                 <td style="text-align:center;">${r.target.points !== undefined ? r.target.points.toLocaleString('sk-SK') : '?'}</td>
                 <td style="text-align:center;">${r.fields.toFixed(2)}</td>
                 <td style="text-align:center;">${fmtDuration(r.eta)}</td>
@@ -775,7 +874,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             html += `<tr style="opacity:0.7;">
                 <td style="text-align:center;">—</td>
                 <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${s.target.id}">Dedina barbarov (${s.target.coord})</a> ${colorTag(s.target.color)}</td>
-                <td style="text-align:center;">${s.target.wall}</td>
+                <td style="text-align:center;">${Number.isFinite(s.target.wall) ? s.target.wall : '?'}</td>
                 <td style="text-align:center;">${s.target.points !== undefined ? s.target.points.toLocaleString('sk-SK') : '?'}</td>
                 <td colspan="4" style="text-align:left;">${s.reason}</td>
             </tr>`;
@@ -923,11 +1022,13 @@ window.FarmGod.Main = (function(Library, Translation) {
         };
 
         // Rabuje sa: zelená, ALEBO modrá (len prieskum) so ZNÁMYM múrom 0.
-        // Tabuľka s baranidlami: ktorákoľvek farba, ale múr musí byť ZNÁMY a > 0 ("?" sa nezobrazí).
+        // Tabuľka s baranidlami: ktorákoľvek farba so ZNÁMYM múrom > 0,
+        // + červená / červeno-modrá / červeno-žltá / žltá s NEZNÁMYM múrom ("?").
         const filterFarms = () => {
             let entries = Object.entries(data.farms.farms);
             data.ramCandidates = entries
-                .filter(([_, v]) => Number.isFinite(v.wall) && v.wall > 0)
+                .filter(([_, v]) => (Number.isFinite(v.wall) && v.wall > 0) ||
+                    (!Number.isFinite(v.wall) && RAM_UNKNOWN_WALL_COLORS.includes(v.color)))
                 .map(([coord, v]) => Object.assign({ coord }, v));
             data.farms.farms = Object.fromEntries(entries.filter(([_, v]) =>
                 v.color === 'green' || (v.color === 'blue' && v.wall === 0)));
@@ -1006,9 +1107,10 @@ window.FarmGod.Main = (function(Library, Translation) {
             if (data.blacklist.size > 0 && data.blacklist.has(target.coord)) return;
             if (limitPoints && (target.points ?? 999999) >= maxPoints) return;
 
-            let plan = RAM_PLANS[target.wall];
+            let wallUnknown = !Number.isFinite(target.wall);
+            let plan = wallUnknown ? RAM_UNKNOWN_PLAN : RAM_PLANS[target.wall];
             if (!plan) {
-                result.skipped.push({ target, reason: `Múr ${target.wall} nemá definovaný vzor – manuálne.` });
+                result.skipped.push({ target, reason: `Múr ${wallUnknown ? '?' : target.wall} nemá definovaný vzor – manuálne.` });
                 return;
             }
             if (near >= maxDistance) {
@@ -1046,7 +1148,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             v.all.light -= plan.light;
             v.all.spy   -= plan.spy;
             v.all.ram   -= plan.ram;
-            let auto = RAM_TARGET_COLORS.includes(target.color);
+            let auto = RAM_TARGET_COLORS.includes(target.color) && (!wallUnknown || RAM_UNKNOWN_AUTO);
             if (reserveAuto && auto) {
                 if (idxLight >= 0) v.units[idxLight] -= plan.light;   // rezervácia pre automatické posielanie
                 if (idxSpy   >= 0) v.units[idxSpy]   -= plan.spy;
