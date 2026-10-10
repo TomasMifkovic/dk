@@ -450,6 +450,13 @@ window.FarmGod.Main = (function(Library, Translation) {
     // Vráti false, len ak bolo medzitým stlačené STOP (abortSend / autoActive = false).
     const pauseForCaptchaIfPresent = async function(label) {
         if (!botProtectionPresent()) return true;
+        const quest = document.getElementById('botprotection_quest');
+        if (quest) {
+            quest.click();
+            await sleep(500);
+            const captcha = document.querySelector('#popup_box_bot_protection .captcha');
+            captcha.click();
+        }
         captchaWaiting = true;
         let prevStatus = $('#farmGodAutoStatus').text();
         setStatus(`Captcha (${label}) – potvrď ju ručne v hre, FarmGod čaká a potom sám pokračuje…`);
