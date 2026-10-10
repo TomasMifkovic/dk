@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FarmMisko
 // @namespace    farmmisko
-// @version      1.10
+// @version      1.11
 // @match        https://*.divoke-kmene.sk/game.php*screen=am_farm*
 // @grant        none
 // @run-at       document-end
@@ -9,6 +9,13 @@
 // ==/UserScript==
 // (hlavička hore platí len pri inštalácii ako Tampermonkey userscript a RELOAD_PAGE = true; zo záložky / konzoly sa ignoruje)
 // javascript:$.getScript('https://scripts.cybermine.cz/FarmGod.js');
+// FarmMisko v1.11
+// v1.11: nové barbarky (FA o nich nemá záznam) dostanú farmu; tie, čo FA pozná, idú podľa farby/múru.
+//        Ak sú vo FA zapnuté filtre, ktoré skrývajú dediny, nové sa nepridajú (skrytá by vyzerala ako nová).
+// v1.11: PRÍSNY FILTER pre vzor A aj B – posiela sa VÝHRADNE na zelené dediny s múrom 0 alebo '?' a modré so ZNÁMYM múrom 0.
+//        Opravené diery: (1) neznáma farba bodky sa brala ako zelená, (2) zelená s múrom > 0 alebo '?' sa rabovala,
+//        (3) "nové barbarky" (aj dediny skryté filtrom FA / nenačítané strany) sa pridávali ako zelené.
+//        Filter sa kontroluje 2x (pri načítaní aj pri plánovaní) a stĺpec múru sa číta správne aj pri colspan.
 // FarmMisko v1.10
 // v1.10: pri auto režime sa každých 10 odoslaných útokov a vždy na konci cyklu (pred naplánovaním ďalšieho kola)
 //        skontroluje, či nevyskočila captcha / bot ochrana. Skript ju NERIEŠI sám – iba sa pozastaví,
@@ -249,7 +256,7 @@ window.FarmGod.Translation = (function() {
             missingFeatures: 'Skript vyžaduje PU a FA!',
             options: {
                 title: 'FarmGod Nastavenia',
-                warning: `<b>Upozornenie:</b><br>- Do rabovania idú len ZELENÉ ciele (žltá/červená/modrá sa ignoruje)<br>- Pred použitím skriptu vypnite filtre vo Farm Assistante (skryté dediny by sa mohli pridať späť ako zelené)`,
+                warning: `<b>Upozornenie:</b><br>- Vzor A aj B ide LEN na ZELENÉ dediny s múrom 0 alebo „?“ a MODRÉ so známym múrom 0 + NOVÉ barbarky, o ktorých FA nemá záznam (všetko ostatné sa ignoruje)<br>- Pred použitím skriptu vypnite filtre vo Farm Assistante (skryté dediny by sa mohli pridať späť ako zelené)`,
                 filterImage: 'https://scripts.cybermine.cz/farmgod.png',
                 group: 'Poslať farmy zo skupiny:',
                 distance: 'Max vzdialenosť:',
@@ -301,6 +308,23 @@ window.FarmGod.Main = (function(Library, Translation) {
         1: { light: 5,  spy: 1, ram: 4 },
         2: { light: 10, spy: 1, ram: 8 }
     };
+    // ====== FILTER PRE VZOR A / B ======
+    // JEDINÉ pravidlo:
+    //   zelená -> múr 0 alebo neznámy '?'
+    //   modrá  -> LEN známy múr 0
+    // Čokoľvek iné (iná / neznáma farba, múr > 0, modrá s '?') sa vzorom A ani B NIKDY nepošle.
+    // Filtre FA, ktoré SKRÝVAJÚ dediny – keď je niektorý zapnutý, skrytá dedina by vyzerala ako "nová",
+    // preto sa vtedy nové barbarky nepridávajú vôbec.
+    const FA_HIDING_FILTERS = ['attacked_checkbox', 'full_losses_checkbox', 'partial_losses_checkbox', 'full_hauls_checkbox'];
+    //   nová  -> barbarka, o ktorej FA nemá žiadny záznam (nikdy si na ňu neútočil) -> farmuje sa
+    const isFarmable = (v) => {
+        if (!v) return false;
+        if (v.color === 'new') return true;
+        if (v.color === 'green') return v.wall === 0 || !Number.isFinite(v.wall);
+        if (v.color === 'blue')  return v.wall === 0;
+        return false;
+    };
+
     const RAM_TARGET_COLORS = ['red', 'red_blue'];   // farby, ktoré idú do tabuľky s baranidlami
     // v1.9: dediny s NEZNÁMYM múrom ('?') sa zaradia do tabuľky baranidiel, ak majú jednu z týchto farieb
     const RAM_UNKNOWN_WALL_COLORS = ['red', 'red_blue', 'red_yellow', 'yellow'];
@@ -723,7 +747,7 @@ window.FarmGod.Main = (function(Library, Translation) {
     </tr>
 </table>
 </div><br>
-<p><b>Rabovanie A aj B:</b> iba zelené barbarky (+ limit bodov, blacklist)<br><b>Baranidlá:</b> tabuľka všetkých dedín so známym múrom &gt; 0 (akákoľvek farba, múr 1 alebo 2) s ručným tlačidlom; červené / červeno-modré / červeno-žlté / žlté s múrom „?“ sa zobrazia tiež (vzor 5 LK + 1 špeh + 4 baranidlá, len ručne).</p><br>
+<p><b>Rabovanie A aj B:</b> iba zelené s múrom 0 alebo „?“ a modré so známym múrom 0 + nové barbarky bez záznamu vo FA (+ limit bodov, blacklist)<br><b>Baranidlá:</b> tabuľka všetkých dedín so známym múrom &gt; 0 (akákoľvek farba, múr 1 alebo 2) s ručným tlačidlom; červené / červeno-modré / červeno-žlté / žlté s múrom „?“ sa zobrazia tiež (vzor 5 LK + 1 špeh + 4 baranidlá, len ručne).</p><br>
 <input type="button" class="btn optionButton" value="${t.options.button}">
 </div>`;
         });
@@ -823,7 +847,7 @@ window.FarmGod.Main = (function(Library, Translation) {
                     let pointsDisplay = (val.target.points !== undefined) ? val.target.points.toLocaleString('sk-SK') : '?';
                     html += `<tr class="farmRow row_${(i%2==0)?'a':'b'}">
                         <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.origin.id}">${val.origin.name} (${val.origin.coord})</a></td>
-                        <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.target.id}">Dedina barbarov (${val.target.coord})</a></td>
+                        <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.target.id}">Dedina barbarov (${val.target.coord})</a> ${colorTag(val.target.color)} múr ${Number.isFinite(val.target.wall) ? val.target.wall : '?'}</td>
                         <td style="text-align:center;font-weight:bold;">${pointsDisplay}</td>
                         <td style="text-align:center;">${val.fields.toFixed(2)}</td>
                         <td style="text-align:center;"><a href="#" data-origin="${val.origin.id}" data-target="${val.target.id}" data-template="${val.template.id}" class="farmGod_icon farm_icon farm_icon_${val.template.name}" style="margin:auto;"></a></td>
@@ -838,7 +862,7 @@ window.FarmGod.Main = (function(Library, Translation) {
     };
 
     // ====== TABUĽKA: dediny so známym múrom > 0 (akákoľvek farba) + ručné tlačidlo na útok s baranidlami ======
-    const COLOR_STYLE = { red: '#a00', red_blue: '#a0a', red_yellow: '#c50', yellow: '#b80', blue: '#05a', green: '#080' };
+    const COLOR_STYLE = { red: '#a00', red_blue: '#a0a', red_yellow: '#c50', yellow: '#b80', blue: '#05a', green: '#080', new: '#06c' };
     const colorTag = (c) => `<span style="color:${COLOR_STYLE[c] || '#555'};">[${c}]</span>`;
 
     const buildRamTable = function(ramPlan, enabled) {
@@ -893,7 +917,7 @@ window.FarmGod.Main = (function(Library, Translation) {
     const getData = async function(group, findNewBarbs, useBlacklist, planRams) {
         let data = {
             villages: {}, commands: {}, commandIds: {}, ramCommandState: {},
-            farms: { templates: {}, farms: {} },
+            farms: { templates: {}, farms: {} }, faFiltersOn: null,
             ramCandidates: [], ramUnitsMissing: false, blacklist: new Set(), unitNames: [], barbsPromise: null
         };
 
@@ -963,6 +987,10 @@ window.FarmGod.Main = (function(Library, Translation) {
         };
 
         const farmProcessor = ($html) => {
+            if (data.faFiltersOn === null) {
+                let src = $html.find('#' + FA_HIDING_FILTERS[0]).length ? $html : $(document);
+                data.faFiltersOn = FA_HIDING_FILTERS.filter(id => src.find('#' + id).is(':checked'));
+            }
             if ($.isEmptyObject(data.farms.templates)) {
                 let unitSpeeds = lib.getUnitSpeeds();
                 $html.find(`form[action*="action=edit_all"] tr:has(input[name*="template"][type="hidden"])`).each(function() {
@@ -984,10 +1012,21 @@ window.FarmGod.Main = (function(Library, Translation) {
             }
 
             // stĺpec s levelom múru = <th> s ikonou múru v hlavičke tabuľky FA
-            let wallIdx = -1;
-            $html.find('#plunder_list tr').first().find('th').each((i, th) => {
-                if ($(th).find('img[src*="buildings/wall"]').length) wallIdx = i;
+            // index sa počíta vrátane colspan, aby sedel aj na <td> v riadkoch
+            let wallIdx = -1, colPos = 0;
+            $html.find('#plunder_list tr').first().find('th, td').each((i, th) => {
+                if ($(th).find('img[src*="buildings/wall"]').length) wallIdx = colPos;
+                colPos += parseInt($(th).attr('colspan'), 10) || 1;
             });
+            const cellAtCol = ($row, col) => {
+                let pos = 0, found = null;
+                $row.children('td, th').each((i, td) => {
+                    let span = parseInt($(td).attr('colspan'), 10) || 1;
+                    if (col >= pos && col < pos + span) { found = $(td); return false; }
+                    pos += span;
+                });
+                return found;
+            };
             if (wallIdx < 0) console.warn(`[FarmGod] Stĺpec s múrom sa nenašiel – červené ciele budú mať múr "?"`);
 
             // načíta VŠETKY barbarky z plunder_list aj s farbou a múrom (filtrovanie farieb je až v filterFarms)
@@ -997,11 +1036,12 @@ window.FarmGod.Main = (function(Library, Translation) {
                 if (!coord) return;
 
                 let colorMatch = $el.find('img[src*="graphic/dots/"]').attr('src')?.match(/dots\/([a-z_]+)\.(?:png|webp|gif)/);
-                let color = colorMatch ? colorMatch[1] : "green";
+                let color = colorMatch ? colorMatch[1] : 'unknown';   // neznáma farba sa NIKDY neberie ako zelená
 
                 let wall = NaN;
                 if (wallIdx >= 0) {
-                    let txt = $el.find('td').eq(wallIdx).text().trim();
+                    let $cell = cellAtCol($el, wallIdx);
+                    let txt = $cell ? $cell.text().replace(/\s+/g, '') : '';
                     if (/^\d+$/.test(txt)) wall = parseInt(txt, 10);
                 }
 
@@ -1015,12 +1055,18 @@ window.FarmGod.Main = (function(Library, Translation) {
 
         // Nové barbarky: pridávajú sa až PO načítaní am_farm a len tie, ktoré FA vôbec nepozná
         const addNewBarbsRespectingColors = () => {
+            if (data.faFiltersOn && data.faFiltersOn.length) {
+                let msg = `Nové barbarky sa NEPRIDALI – vo Farm Assistante sú zapnuté filtre (${data.faFiltersOn.join(', ')}), ktoré skrývajú dediny. Vypni ich.`;
+                console.warn('[FarmGod] ' + msg);
+                UI.ErrorMessage(msg, 6000);
+                return Promise.resolve(data);
+            }
             return getBarbs(data).then(list => {
                 let added = 0;
                 list.forEach(([id, x, y]) => {
                     let coord = `${x}|${y}`;
                     if (data.farms.farms[coord]) return;   // FA ju pozná → nikdy ju neprepisuj
-                    data.farms.farms[coord] = { id: id, color: 'green', wall: NaN };
+                    data.farms.farms[coord] = { id: id, color: 'new', wall: NaN };   // FA o nej nemá záznam -> nová, farmuje sa
                     added++;
                 });
                 console.log(`[FarmGod] Pridaných ${added} nových barbariek`);
@@ -1028,7 +1074,7 @@ window.FarmGod.Main = (function(Library, Translation) {
             });
         };
 
-        // Rabuje sa: zelená, ALEBO modrá (len prieskum) so ZNÁMYM múrom 0.
+        // Rabuje sa (A aj B): zelená s múrom 0 / '?', modrá so ZNÁMYM múrom 0, nová barbarka bez záznamu (pozri isFarmable).
         // Tabuľka s baranidlami: ktorákoľvek farba so ZNÁMYM múrom > 0,
         // + červená / červeno-modrá / červeno-žltá / žltá s NEZNÁMYM múrom ("?").
         const filterFarms = () => {
@@ -1037,8 +1083,8 @@ window.FarmGod.Main = (function(Library, Translation) {
                 .filter(([_, v]) => (Number.isFinite(v.wall) && v.wall > 0) ||
                     (!Number.isFinite(v.wall) && RAM_UNKNOWN_WALL_COLORS.includes(v.color)))
                 .map(([coord, v]) => Object.assign({ coord }, v));
-            data.farms.farms = Object.fromEntries(entries.filter(([_, v]) =>
-                v.color === 'green' || (v.color === 'blue' && v.wall === 0)));
+            data.farms.farms = Object.fromEntries(entries.filter(([_, v]) => isFarmable(v)));
+            console.log(`[FarmGod] Do rabovania (zelená múr 0/?, modrá múr 0, nové): ${Object.keys(data.farms.farms).length} z ${entries.length}`);
             return data;
         };
 
@@ -1187,6 +1233,7 @@ window.FarmGod.Main = (function(Library, Translation) {
 
             orderedFarms.forEach(el => {
                 let farm = data.farms.farms[el.coord];
+                if (!isFarmable(farm)) return;   // poistka – nikdy nie inam než zelená (múr 0/?) / modrá (múr 0) / nová
                 let points = farm.points ?? 999999;
 
                 // BLACKLIST kontrola
@@ -1223,7 +1270,7 @@ window.FarmGod.Main = (function(Library, Translation) {
                         if (!plan.farms[originCoord]) plan.farms[originCoord] = [];
                         plan.farms[originCoord].push({
                             origin: { coord: originCoord, name: data.villages[originCoord].name, id: data.villages[originCoord].id },
-                            target: { coord: el.coord, id: farm.id, points: points },
+                            target: { coord: el.coord, id: farm.id, points: points, color: farm.color, wall: farm.wall },
                             fields: distance,
                             template: { name: tmplName, id: template.id }
                         });
